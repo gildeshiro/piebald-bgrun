@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# bg-kill <job-id> — mata o runner destacado de um job pela cmdline (targeted,
+# nunca broad). Marca o job como terminado (rc=143) pra o hook fechar a sentinela.
+set -uo pipefail
+BG_ROOT="${PIEBALD_BG_ROOT:-$HOME/.piebald-bg}"
+job="${1:?uso: bg-kill <job-id>}"
+JOBDIR="$BG_ROOT/$job"
+[[ -d "$JOBDIR" ]] || { echo "job não encontrado: $job" >&2; exit 1; }
+if command -v powershell.exe >/dev/null 2>&1; then
+  # mata só processos cuja cmdline cita o id deste job (runner.sh do job)
+  powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { \$_.CommandLine -match [regex]::Escape('$job') } | ForEach-Object { Stop-Process -Id \$_.ProcessId -Force -ErrorAction SilentlyContinue }" >/dev/null 2>&1 || true
+else
+  pkill -f "$job" 2>/dev/null || true
+fi
+[[ -f "$JOBDIR/done" ]] || printf '%s' "143" > "$JOBDIR/done"
+touch "$BG_ROOT/.pending"
+echo "[bg-kill] $job sinalizado (terminado)."
+exit 0

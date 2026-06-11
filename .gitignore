@@ -1,0 +1,5 @@
+# estado de runtime dos jobs (nao versionar)
+.piebald-bg/
+*.bak-*
+__pycache__/
+*.pyc
