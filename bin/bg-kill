@@ -1,18 +1,57 @@
 #!/usr/bin/env bash
-# bg-kill <job-id> — kills the detached runner of a job by cmdline (targeted,
-# never broad). Marks the job as terminated (rc=143) so the hook closes the sentinel.
+# bg-kill <job-id> — terminates a job's detached process group reliably and marks it
+# terminated (rc=143) so the hook closes the sentinel.
+#
+# Why a process GROUP (not a single PID or a cmdline match): bgrun detaches the
+# runner as a session/group leader, so the runner + its inner bash + the actual
+# command all share one process group (pgid == runner pid, written to the pid file).
+# On Windows the Start-Process boundary breaks the WINDOWS parent tree (so "taskkill
+# /T" alone misses the worker), but the cygwin process group stays intact and msys
+# "kill -<pgid>" reaps it. We also taskkill /T the Windows pid to catch any NATIVE
+# child subtree the cygwin group doesn't track.
+#
+# IMPORTANT: this kills strictly by the job's own recorded pids — never by a broad
+# cmdline match against the job id (the old approach matched bg-kill's own shell and
+# the powershell helper, self-killing with exit -1). The legacy fallback below is
+# narrowly scoped to the job's runner.sh process and excludes powershell.exe, so it
+# can never match bg-kill itself.
 set -uo pipefail
 BG_ROOT="${PIEBALD_BG_ROOT:-$HOME/.piebald-bg}"
 job="${1:?usage: bg-kill <job-id>}"
 JOBDIR="$BG_ROOT/$job"
 [[ -d "$JOBDIR" ]] || { echo "job not found: $job" >&2; exit 1; }
+
+pid="$(tr -d '\r\n ' < "$JOBDIR/pid" 2>/dev/null || true)"
+winpid="$(tr -d '\r\n ' < "$JOBDIR/winpid" 2>/dev/null || true)"
+
 if command -v powershell.exe >/dev/null 2>&1; then
-  # kill only processes whose cmdline references this job's id (job's runner.sh)
-  powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { \$_.CommandLine -match [regex]::Escape('$job') } | ForEach-Object { Stop-Process -Id \$_.ProcessId -Force -ErrorAction SilentlyContinue }" >/dev/null 2>&1 || true
+  # Belt first (while the runner is still alive): kill the runner's NATIVE Windows
+  # subtree. /T = children too, /F = force. Run INSIDE powershell so the /flags
+  # aren't mangled by git-bash path conversion.
+  [[ -n "$winpid" ]] && powershell.exe -NoProfile -Command "taskkill /T /F /PID $winpid" >/dev/null 2>&1 || true
+  # Main path: reap the cygwin process group (runner + inner bash + the command).
+  if [[ -n "$pid" ]]; then
+    kill -TERM -"$pid" 2>/dev/null || true
+    sleep 0.3 2>/dev/null || true
+    kill -KILL -"$pid" 2>/dev/null || true
+  elif [[ -z "$winpid" ]]; then
+    # legacy job (no pid/winpid files): target ONLY the runner.sh process for this
+    # job id, then taskkill /T its tree. Excludes powershell.exe; bg-kill's own arg
+    # is just the job id (no 'runner.sh'), so it is never matched -> no self-kill.
+    powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { \$_.Name -ne 'powershell.exe' -and \$_.CommandLine -match 'runner\.sh' -and \$_.CommandLine -match [regex]::Escape('$job') } | ForEach-Object { taskkill /T /F /PID \$_.ProcessId 2>\$null }" >/dev/null 2>&1 || true
+  fi
 else
-  pkill -f "$job" 2>/dev/null || true
+  if [[ -n "$pid" ]]; then
+    # negative pid = whole process group (bgrun used setsid -> pid == pgid)
+    kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+    sleep 0.3 2>/dev/null || true
+    kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+  else
+    pkill -f "$job" 2>/dev/null || true
+  fi
 fi
+
 [[ -f "$JOBDIR/done" ]] || printf '%s' "143" > "$JOBDIR/done"
 touch "$BG_ROOT/.pending"
-echo "[bg-kill] $job signaled (terminated)."
+echo "[bg-kill] $job terminated (rc=143)."
 exit 0

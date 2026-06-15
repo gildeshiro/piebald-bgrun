@@ -10,6 +10,9 @@
 # Per-job state in ~/.piebald-bg/<job-id>/:
 #   cmd desc cwd  -> input
 #   out          -> stdout+stderr combined (read later with Read)
+#   pid          -> MSYS/Linux pid of the detached runner = process-group leader
+#                   (bg-kill signals the whole group: runner + inner bash + command)
+#   winpid       -> Windows pid of the runner (belt for "taskkill /T" of native children)
 #   start end    -> epoch
 #   done         -> written LAST; contains the exit code (completion sentinel)
 #   .ack         -> written by the UserPromptSubmit hook upon notification (idempotency)
@@ -44,6 +47,10 @@ printf '%s' "$CWD"  > "$JOBDIR/cwd"
 cat > "$JOBDIR/runner.sh" <<RUNNER
 #!/usr/bin/env bash
 export PATH="\$HOME/bin:\$HOME/AppData/Roaming/npm:\$HOME/scoop/shims:/usr/bin:/bin:/usr/local/bin:\$PATH"
+# Record our OWN pid as the job's process-group leader. When launched detached
+# (Windows Start-Process / setsid) this bash is a session/group leader, so \$\$ == pgid
+# and bg-kill can reap the whole group (this runner + inner bash + the command).
+printf '%s' "\$\$" > "$JOBDIR/pid"
 cd "$CWD" 2>/dev/null || cd "\$HOME"
 date +%s > "$JOBDIR/start"
 bash -lc "\$(cat '$JOBDIR/cmd')" > "$JOBDIR/out" 2>&1
@@ -61,8 +68,14 @@ touch "$BG_ROOT/.pending"
 # survives the tool call return); elsewhere -> setsid/nohup.
 if command -v powershell.exe >/dev/null 2>&1; then
   BASHEXE="$(cygpath -w "$(command -v bash)")"
-  powershell.exe -NoProfile -Command "Start-Process -WindowStyle Hidden -FilePath '$BASHEXE' -ArgumentList '$JOBDIR/runner.sh'" >/dev/null 2>&1 || true
+  # -PassThru returns the launched process; record its WINDOWS pid as a belt so
+  # bg-kill can also "taskkill /T" any NATIVE child subtree. (The cygwin group
+  # leader pid is written by runner.sh into the pid file — used for the group kill.)
+  PID_OUT="$(powershell.exe -NoProfile -Command "(Start-Process -WindowStyle Hidden -FilePath '$BASHEXE' -ArgumentList '$JOBDIR/runner.sh' -PassThru).Id" 2>/dev/null | tr -d '\r\n ')"
+  [[ -n "$PID_OUT" ]] && printf '%s' "$PID_OUT" > "$JOBDIR/winpid"
 elif command -v setsid >/dev/null 2>&1; then
+  # setsid -> new session/process-group leader (runner.sh's \$\$ == pgid), so bg-kill
+  # can signal the whole group with "kill -TERM -<pid>".
   setsid bash "$JOBDIR/runner.sh" >/dev/null 2>&1 &
 else
   nohup bash "$JOBDIR/runner.sh" >/dev/null 2>&1 &
