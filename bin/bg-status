@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# bg-status [filtro] — lista jobs do wrapper bg e seu estado (running/completed/failed).
-# Sem filtro: todos. Com filtro: jobs cujo id contém o filtro.
+# bg-status [filter] — lists bgrun jobs and their state (running/completed/failed).
+# No filter: all jobs. With filter: jobs whose id contains the filter string.
 set -uo pipefail
 BG_ROOT="${PIEBALD_BG_ROOT:-$HOME/.piebald-bg}"
-[[ -d "$BG_ROOT" ]] || { echo "nenhum job ainda."; exit 0; }
+[[ -d "$BG_ROOT" ]] || { echo "no jobs yet."; exit 0; }
 shopt -s nullglob
 filter="${1:-}"
 found=0
@@ -20,10 +20,10 @@ for d in "$BG_ROOT"/*/; do
     if [[ -f "$d/start" && -f "$d/end" ]]; then
       secs=" $(( $(cat "$d/end") - $(cat "$d/start") ))s"
     fi
-    echo "[$st rc=$rc]${secs} $job — $desc (${bytes}B em ${d}out)"
+    echo "[$st rc=$rc]${secs} $job — $desc (${bytes}B in ${d}out)"
   else
     echo "[running] $job — $desc (${d}out)"
   fi
 done
-[[ $found -eq 0 ]] && echo "nenhum job${filter:+ casando \"$filter\"}."
+[[ $found -eq 0 ]] && echo "no jobs${filter:+ matching \"$filter\"}."
 exit 0

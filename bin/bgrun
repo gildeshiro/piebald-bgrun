@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
-# bgrun — dispara um comando longo DESTACADO (sobrevive ao retorno do tool call no
-# Piebald, que roda o terminal SÍNCRONO). Replica o run_in_background do Claude Code.
-# (Nome NÃO é "bg" de propósito: bg é builtin de job control do bash e tem precedência.)
+# bgrun — fires a long command DETACHED (survives the tool call return in Piebald,
+# which runs the terminal SYNCHRONOUSLY). Replicates Claude Code's run_in_background.
+# (Name is NOT "bg" on purpose: bg is a bash job-control builtin with PATH precedence.)
 #
-# Uso:
-#   bgrun "<comando>"                       # descrição = o próprio comando
-#   bgrun "<descrição curta>" "<comando completo>"
+# Usage:
+#   bgrun "<command>"                       # description = the command itself
+#   bgrun "<short description>" "<full command>"
 #
-# Estado por job em ~/.piebald-bg/<job-id>/:
-#   cmd desc cwd  -> entrada
-#   out          -> stdout+stderr combinados (lido depois com Read)
+# Per-job state in ~/.piebald-bg/<job-id>/:
+#   cmd desc cwd  -> input
+#   out          -> stdout+stderr combined (read later with Read)
 #   start end    -> epoch
-#   done         -> escrito ao FIM, contém o exit code (sentinela de conclusão)
-#   .ack         -> escrito pelo hook UserPromptSubmit ao notificar (idempotência)
+#   done         -> written LAST; contains the exit code (completion sentinel)
+#   .ack         -> written by the UserPromptSubmit hook upon notification (idempotency)
 #
-# Conclusão é notificada automaticamente pelo hook bg-wake (UserPromptSubmit):
-# NÃO faça poll síncrono. Checar sob demanda: bg-status / matar: bg-kill.
+# Completion is notified automatically by the bg-wake hook (UserPromptSubmit):
+# do NOT poll synchronously. Check on demand: bg-status / kill: bg-kill.
 set -uo pipefail
 
 BG_ROOT="${PIEBALD_BG_ROOT:-$HOME/.piebald-bg}"
@@ -26,7 +26,7 @@ if [[ $# -eq 1 ]]; then
 elif [[ $# -ge 2 ]]; then
   DESC="$1"; shift; CMD="$*"
 else
-  echo "uso: bgrun \"<comando>\"  |  bgrun \"<descrição>\" \"<comando>\"" >&2
+  echo "usage: bgrun \"<command>\"  |  bgrun \"<description>\" \"<command>\"" >&2
   exit 2
 fi
 
@@ -39,8 +39,8 @@ printf '%s' "$CMD"  > "$JOBDIR/cmd"
 printf '%s' "$DESC" > "$JOBDIR/desc"
 printf '%s' "$CWD"  > "$JOBDIR/cwd"
 
-# runner destacado: roda no CWD original, captura tudo em out, escreve a sentinela
-# done(rc) por último. Reexporta PATH porque processo destacado pode não herdar tudo.
+# detached runner: runs in the original CWD, captures everything in out, writes the
+# done sentinel last. Re-exports PATH because the detached process may not inherit it.
 cat > "$JOBDIR/runner.sh" <<RUNNER
 #!/usr/bin/env bash
 export PATH="\$HOME/bin:\$HOME/AppData/Roaming/npm:\$HOME/scoop/shims:/usr/bin:/bin:/usr/local/bin:\$PATH"
@@ -54,11 +54,11 @@ touch "$BG_ROOT/.pending"
 RUNNER
 chmod +x "$JOBDIR/runner.sh"
 
-# marcador de gate barato pro hook .cmd (só spawna bash se .pending existir)
+# cheap gate marker for the .cmd hook (only spawns bash if .pending exists)
 touch "$BG_ROOT/.pending"
 
-# detach real: Windows -> PowerShell Start-Process (processo independente que
-# sobrevive ao retorno do tool call); fora do Windows -> setsid/nohup.
+# real detach: Windows -> PowerShell Start-Process (independent process that
+# survives the tool call return); elsewhere -> setsid/nohup.
 if command -v powershell.exe >/dev/null 2>&1; then
   BASHEXE="$(cygpath -w "$(command -v bash)")"
   powershell.exe -NoProfile -Command "Start-Process -WindowStyle Hidden -FilePath '$BASHEXE' -ArgumentList '$JOBDIR/runner.sh'" >/dev/null 2>&1 || true
@@ -69,6 +69,6 @@ else
   disown 2>/dev/null || true
 fi
 
-echo "[bgrun] job $JOB lançado (destacado). desc: $DESC"
+echo "[bgrun] job $JOB launched (detached). desc: $DESC"
 echo "[bgrun] output -> $JOBDIR/out"
-echo "[bgrun] o hook UserPromptSubmit avisa ao terminar. checar agora: bg-status $JOB"
+echo "[bgrun] the UserPromptSubmit hook will notify on completion. check now: bg-status $JOB"

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# install.sh — instala o trio piebald-bgrun (B wrappers + C hook + A diretiva).
+# install.sh — installs the piebald-bgrun trio (B wrappers + C hook + A directive).
 #
-#   bash install.sh            # tudo (B + C + A)
-#   bash install.sh --no-app   # pula a peça A (não toca no app.db / system prompt)
-#   bash install.sh --no-hook  # pula a peça C (não registra o hook)
+#   bash install.sh            # everything (B + C + A)
+#   bash install.sh --no-app   # skips piece A (does not touch app.db / system prompt)
+#   bash install.sh --no-hook  # skips piece C (does not register the hook)
 #
-# Portável: Windows/Piebald (git-bash) e Linux/Claude Code. Idempotente.
+# Portable: Windows/Piebald (git-bash) and Linux/Claude Code. Idempotent.
 set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BINSRC="$REPO/bin"
@@ -34,9 +34,9 @@ for f in bgrun bg-status bg-kill bg-wake.sh apply-bg-directive.py; do
 done
 [[ $IS_WIN -eq 1 ]] && cp "$BINSRC/bg-wake-hook.cmd" "$BINDST/bg-wake-hook.cmd"
 echo "[B] wrappers -> $BINDST (bgrun, bg-status, bg-kill)"
-case ":$PATH:" in *":$BINDST:"*) : ;; *) echo "    AVISO: $BINDST não está no PATH — adicione-o.";; esac
+case ":$PATH:" in *":$BINDST:"*) : ;; *) echo "    WARNING: $BINDST is not in PATH — please add it.";; esac
 
-# ── C: hook UserPromptSubmit (idempotente) ────────────────────────────────────
+# ── C: hook UserPromptSubmit (idempotent) ────────────────────────────────────
 if [[ $DO_HOOK -eq 1 ]]; then
   if [[ $IS_WIN -eq 1 ]]; then
     HOOKCMD="$(cygpath -w "$BINDST/bg-wake-hook.cmd" 2>/dev/null || echo "$BINDST/bg-wake-hook.cmd")"
@@ -59,24 +59,24 @@ if block is None:
 if not any(h.get("command") == cmd for h in block["hooks"]):
     block["hooks"].append({"type": "command", "command": cmd})
     json.dump(data, open(path, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
-    print(f"[C] hook registrado: {cmd}")
+    print(f"[C] hook registered: {cmd}")
 else:
-    print(f"[C] hook já registrado (idempotente): {cmd}")
+    print(f"[C] hook already registered (idempotent): {cmd}")
 PY
 else
-  echo "[C] pulado (--no-hook)"
+  echo "[C] skipped (--no-hook)"
 fi
 
-# ── A: diretiva no system prompt ──────────────────────────────────────────────
+# ── A: directive in the system prompt ────────────────────────────────────────
 if [[ $DO_APP -eq 1 ]]; then
   if [[ $IS_WIN -eq 1 ]]; then
-    python3 "$BINDST/apply-bg-directive.py" || echo "[A] FALHOU — rode manualmente (idealmente com o Piebald fechado)"
+    python3 "$BINDST/apply-bg-directive.py" || echo "[A] FAILED — run manually (ideally with Piebald closed)"
   else
-    echo "[A] Claude Code/Linux: NÃO há app.db. Cole docs/system-prompt-directive.md em"
-    echo "    ~/.claude/CLAUDE.md (global) ou no AGENTS.md/CLAUDE.md de raiz do projeto."
+    echo "[A] Claude Code/Linux: no app.db here. Paste docs/system-prompt-directive.md into"
+    echo "    ~/.claude/CLAUDE.md (global) or the AGENTS.md/CLAUDE.md at the project root."
   fi
 else
-  echo "[A] pulado (--no-app)"
+  echo "[A] skipped (--no-app)"
 fi
 
-echo "== feito. Ative A+C abrindo um CHAT NOVO no Piebald. B (bgrun) já funciona. =="
+echo "== done. Activate A+C by opening a NEW CHAT in Piebald. B (bgrun) works immediately. =="

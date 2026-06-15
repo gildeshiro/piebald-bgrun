@@ -1,95 +1,100 @@
 # piebald-bgrun
 
-Background execution para o **Piebald** no estilo do `run_in_background` do Claude Code.
+Background execution for **Piebald** in the style of Claude Code's `run_in_background`.
 
-O terminal do Piebald roda **síncrono**: um comando longo bloqueia o chat até voltar
-(você não consegue mandar outra mensagem). Este projeto dá ao agente o reflexo de
-disparar tarefas longas **destacadas** (builds, suítes de teste, debates multi-LLM,
-downloads) e ser **notificado automaticamente** quando terminam — sem travar a conversa
-e sem poll manual.
+Piebald's terminal runs **synchronously**: a long command blocks the chat until it
+returns (no further messages can be sent). This project gives the agent the instinct to
+fire long tasks **detached** (builds, test suites, multi-LLM debates, downloads) and be
+**notified automatically** when they finish — without blocking the conversation or
+requiring manual polling.
 
-> Replica a fluidez do `run_in_background` do Claude Code dentro das limitações do
-> Piebald (que não tem event loop de injeção unilateral de notificação). Ver
-> [`docs/DESIGN.md`](docs/DESIGN.md) pra anatomia completa, incluindo como o Claude
-> Code faz por dentro.
+> Replicates the fluidity of Claude Code's `run_in_background` within Piebald's
+> constraints (no event loop for unilateral notification injection). See
+> [`docs/DESIGN.md`](docs/DESIGN.md) for the full anatomy, including how Claude Code
+> implements it internally.
 
 ---
 
-## O trio
+## The trio
 
-Fluidez de verdade precisa de três peças independentes — cada uma cobre uma lacuna:
+True fluidity requires three independent pieces — each one covers a gap:
 
-| Peça | O quê | Cobre | Arquivo |
+| Piece | What | Covers | File |
 | --- | --- | --- | --- |
-| **A** Gatilho | Diretiva no **system prompt** do profile (reflexo permanente) | "quando disparar" | `bin/apply-bg-directive.py` |
-| **B** Fricção | Wrapper `bgrun` + `bg-status` + `bg-kill` | "fácil de disparar" | `bin/bgrun`, `bin/bg-status`, `bin/bg-kill` |
-| **C** Wake | Hook `UserPromptSubmit` que injeta a conclusão | "descobre que acabou" | `bin/bg-wake.sh`, `bin/bg-wake-hook.cmd` |
+| **A** Trigger | Directive in the profile's **system prompt** (permanent reflex) | "when to fire" | `bin/apply-bg-directive.py` |
+| **B** Wrapper | `bgrun` + `bg-status` + `bg-kill` | "easy to launch" | `bin/bgrun`, `bin/bg-status`, `bin/bg-kill` |
+| **C** Wake | `UserPromptSubmit` hook that injects the completion notice | "learns it finished" | `bin/bg-wake.sh`, `bin/bg-wake-hook.cmd` |
 
-Tirar qualquer peça deixa o sistema manco: só A = sabe disparar mas checa na mão; só
-B = dispara fácil mas você lembra de checar; A+B sem C = falta o "acordar sozinho".
+Remove any piece and the system limps: A alone = knows to fire but checks manually;
+B alone = easy to fire but you have to remember to check; A+B without C = missing the
+"wake up on its own" part.
 
 ---
 
-## Uso (depois de instalado)
+## Usage (after installation)
 
 ```bash
-# dispara destacado, retorna na hora com um job-id
+# fire detached, returns immediately with a job-id
 bgrun "build do tmoney" "cargo build --release"
 
-# ...a conversa segue normalmente...
+# ...the conversation continues normally...
 
-# no PRÓXIMO turno, o hook injeta automaticamente:
+# on the NEXT turn, the hook automatically injects:
 #   <background-task-status>
 #   ✅ background completed (exit 0) — "build do tmoney"  [job 20260611-...]  output: ~/.piebald-bg/.../out
 #   </background-task-status>
 
-# sob demanda:
-bg-status            # lista todos os jobs e estado
-bg-status <job-id>   # filtra
-bg-kill  <job-id>    # mata targeted (pela cmdline)
+# on demand:
+bg-status            # lists all jobs and their status
+bg-status <job-id>   # filter by job id
+bg-kill  <job-id>    # targeted kill (by cmdline)
 ```
 
-Formas de chamar:
-- `bgrun "<comando>"` — a descrição vira o próprio comando.
-- `bgrun "<descrição curta>" "<comando completo>"` — descrição explícita.
+Invocation forms:
+- `bgrun "<command>"` — the description defaults to the command itself.
+- `bgrun "<short description>" "<full command>"` — explicit description.
 
-O estado de cada job vive em `~/.piebald-bg/<job-id>/`:
+Each job's state lives in `~/.piebald-bg/<job-id>/`:
 ```
-cmd desc cwd   entrada
-out            stdout+stderr combinados (leia com Read se precisar dos detalhes)
+cmd desc cwd   input
+out            stdout+stderr combined (read with Read if you need the details)
 start end      epoch
-done           escrito por ÚLTIMO; contém o exit code (sentinela de conclusão)
-.ack           o hook marca ao notificar (idempotência)
+done           written LAST; contains the exit code (completion sentinel)
+.ack           written by the hook upon notification (idempotency)
 ```
 
 ---
 
-## Instalação
+## Installation
 
 ```bash
-bash install.sh            # instala B (wrappers) + C (hook) + A (diretiva no app.db)
-bash install.sh --no-app   # pula a peça A (não toca no app.db)
-bash uninstall.sh          # reverte tudo (restaura app.db do backup, tira o hook, remove ~/bin/*)
+bash install.sh            # installs B (wrappers) + C (hook) + A (directive in app.db)
+bash install.sh --no-app   # skips piece A (does not touch app.db / system prompt)
+bash install.sh --no-hook  # skips piece C (does not register the hook)
 ```
 
-Detalhes e adaptação por SO (Windows/Piebald vs Linux/phone/Claude Code) em
-[`docs/DESIGN.md`](docs/DESIGN.md) e nos comentários de cada script.
+```bash
+bash uninstall.sh          # reverts everything (restores app.db from backup, removes hook, deletes ~/bin/*)
+```
 
-### Ativação
-- **B (`bgrun`)** funciona na hora.
-- **A (system prompt)** e **C (hook)** pegam num **chat novo** (o Piebald clona o
-  config do profile e recarrega os hooks na criação do chat). Um chat aberto *antes*
-  da instalação fica com o estado velho em cache — abra um chat novo.
+Details and per-OS adaptation (Windows/Piebald vs Linux/phone/Claude Code) in
+[`docs/DESIGN.md`](docs/DESIGN.md) and in the comments of each script.
+
+### Activation
+- **B (`bgrun`)** works immediately.
+- **A (system prompt)** and **C (hook)** take effect in a **new chat** (Piebald clones the
+  profile config and reloads hooks when a new chat is created). A chat opened *before*
+  installation keeps the old cached state — open a new chat.
 
 ---
 
-## Limitação arquitetural (honesta)
+## Architectural limitation (honest)
 
-O Piebald **não tem** event loop que injete mensagem no meio de um turno sem input do
-usuário. Então o wake é **pull no próximo prompt**, não **push no meio da geração**
-como o Claude Code. Na prática quase não se nota (dispara → conversa → status aparece),
-mas se você disparar e sumir 10 min, o agente só "descobre" que terminou quando você
-voltar a digitar. É o teto do Piebald — ver `docs/DESIGN.md §4`.
+Piebald has **no** event loop that injects messages mid-turn without user input. So the
+wake is **pull on the next prompt**, not **push mid-generation** like Claude Code. In
+practice this is nearly invisible (fire → converse → status appears), but if you fire
+and go quiet for 10 min, the agent only "discovers" completion when you type again.
+That is Piebald's ceiling — see `docs/DESIGN.md §4`.
 
 ---
 
@@ -98,14 +103,14 @@ voltar a digitar. É o teto do Piebald — ver `docs/DESIGN.md §4`.
 ```
 piebald-bgrun/
 ├── README.md
-├── AGENTS.md                       # lido por Piebald/Claude Code ao abrir o projeto
+├── AGENTS.md                       # read by Piebald/Claude Code when the project is opened
 ├── install.sh / uninstall.sh
-├── progress-log.md                 # tracking local do projeto
+├── progress-log.md                 # local project tracking log
 ├── bin/
-│   ├── bgrun  bg-status  bg-kill   # peça B
-│   ├── bg-wake.sh  bg-wake-hook.cmd# peça C
-│   └── apply-bg-directive.py       # peça A
+│   ├── bgrun  bg-status  bg-kill   # piece B
+│   ├── bg-wake.sh  bg-wake-hook.cmd# piece C
+│   └── apply-bg-directive.py       # piece A
 └── docs/
-    ├── DESIGN.md                   # internals do run_in_background + anatomia do trio
-    └── system-prompt-directive.md  # o texto exato injetado no system prompt
+    ├── DESIGN.md                   # run_in_background internals + anatomy of the trio
+    └── system-prompt-directive.md  # the exact text injected into the system prompt
 ```

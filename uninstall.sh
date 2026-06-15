@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# uninstall.sh — reverte o trio piebald-bgrun.
-#   bash uninstall.sh            # reverte A (diretiva) + C (hook) + remove B (wrappers)
-#   bash uninstall.sh --keep-bin # mantém os wrappers em ~/bin
+# uninstall.sh — reverts the piebald-bgrun trio.
+#   bash uninstall.sh            # reverts A (directive) + C (hook) + removes B (wrappers)
+#   bash uninstall.sh --keep-bin # keeps the wrappers in ~/bin
 set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BINDST="$HOME/bin"
@@ -13,14 +13,14 @@ case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) IS_WIN=1 ;; *) IS_WIN=0 ;; esac
 
 echo "== piebald-bgrun uninstall =="
 
-# ── A: remover a diretiva (Piebald) ───────────────────────────────────────────
+# ── A: remove the directive (Piebald) ─────────────────────────────────────────
 if [[ $IS_WIN -eq 1 && -f "$BINDST/apply-bg-directive.py" ]]; then
-  python3 "$BINDST/apply-bg-directive.py" --revert || echo "[A] revert falhou — restaure um app.db.bak-* manualmente"
+  python3 "$BINDST/apply-bg-directive.py" --revert || echo "[A] revert failed — restore an app.db.bak-* manually"
 else
-  echo "[A] Claude Code/Linux: remova manualmente o bloco '## Background execution' do CLAUDE.md/AGENTS.md."
+  echo "[A] Claude Code/Linux: manually remove the '## Background execution' block from CLAUDE.md/AGENTS.md."
 fi
 
-# ── C: tirar o hook do settings.json ──────────────────────────────────────────
+# ── C: remove the hook from settings.json ─────────────────────────────────────
 if [[ -f "$SETTINGS" ]]; then
   python3 - "$SETTINGS" <<'PY'
 import json, sys
@@ -35,20 +35,20 @@ for block in data.get("hooks", {}).get("UserPromptSubmit", []):
     changed = changed or (len(block["hooks"]) != before)
 if changed:
     json.dump(data, open(path, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
-    print("[C] hook removido do settings.json")
+    print("[C] hook removed from settings.json")
 else:
-    print("[C] hook não estava no settings.json")
+    print("[C] hook was not present in settings.json")
 PY
 fi
 
-# ── B: remover wrappers ───────────────────────────────────────────────────────
+# ── B: remove wrappers ────────────────────────────────────────────────────────
 if [[ $KEEP_BIN -eq 0 ]]; then
   for f in bgrun bg-status bg-kill bg-wake.sh bg-wake-hook.cmd apply-bg-directive.py; do
     rm -f "$BINDST/$f"
   done
-  echo "[B] wrappers removidos de $BINDST"
+  echo "[B] wrappers removed from $BINDST"
 else
-  echo "[B] mantidos (--keep-bin)"
+  echo "[B] kept (--keep-bin)"
 fi
 
-echo "== feito. (Os jobs em ~/.piebald-bg/ NÃO foram apagados — limpe à mão se quiser.) =="
+echo "== done. (Jobs in ~/.piebald-bg/ were NOT removed — clean them up manually if needed.) =="

@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-# apply-bg-directive.py — anexa a diretiva de "background execution" ao system
-# prompt do profile Default do Piebald (tabela base_gen_cfg_data no app.db).
+# apply-bg-directive.py — appends the "background execution" directive to the system
+# prompt of the Default profile in Piebald (table base_gen_cfg_data in app.db).
 #
-# Idempotente (marcador BG_MARKER), faz backup antes de escrever, detecta o
-# config_id do profile Default DINAMICAMENTE (o id muda — não hardcode).
+# Idempotent (BG_MARKER sentinel), makes a backup before writing, detects the
+# config_id of the Default profile DYNAMICALLY (the id changes — never hardcode it).
 #
-# IDEAL: rodar com o Piebald FECHADO (evita o cache em memória do app sobrescrever).
-# Ao vivo funciona, mas a ativação exige restart do app de qualquer forma.
+# RECOMMENDED: run with Piebald CLOSED (avoids the in-memory cache overwriting the
+# change). Running live works, but activation requires a new chat regardless.
 #
-# Uso:  python apply-bg-directive.py [--db <caminho>] [--revert]
+# Usage:  python apply-bg-directive.py [--db <path>] [--revert]
 import sqlite3, shutil, sys, os, datetime, argparse
 
 DEFAULT_DB = os.path.expandvars(r"%APPDATA%\piebald\app.db")
@@ -18,37 +18,37 @@ DIRECTIVE = """
 
 ---
 
-## Background execution — rode tarefas longas DESTACADAS (não bloqueie o chat)
+## Background execution — run long tasks DETACHED (do not block the chat)
 
-Este host é Piebald: o terminal roda SÍNCRONO, então um comando longo síncrono TRAVA
-o chat (o usuário não consegue mandar outra mensagem até o comando voltar). Por isso,
-quando uma tarefa for demorada e não-bloqueante — builds, suítes de teste, debates
-multi-LLM (gemini/codex), downloads grandes, varreduras longas —, NÃO rode síncrono:
-dispare destacada com o wrapper `bgrun`, por instinto, como o run_in_background do
-Claude Code.
+This host is Piebald: the terminal runs SYNCHRONOUSLY, so a long synchronous command
+BLOCKS the chat (the user cannot send another message until it returns). Therefore,
+when a task is long-running and non-blocking — builds, test suites, multi-LLM debates
+(gemini/codex), large downloads, long scans — do NOT run synchronously: fire it
+detached with the `bgrun` wrapper, by reflex, just as you would use run_in_background
+in Claude Code.
 
-- Disparar: `bgrun "<descrição curta>" "<comando completo>"` (ou `bgrun "<comando>"`).
-  Retorna na hora com um job-id; o chat fica livre.
-- NÃO faça poll síncrono nem sleep esperando. Quando o job termina, o hook
-  UserPromptSubmit injeta um bloco `<background-task-status>` automaticamente no
-  próximo turno — confie nisso, não fique checando.
-- Sob demanda: `bg-status [job-id]` (estado) · `bg-kill <job-id>` (matar).
-- O output de cada job vive em `~/.piebald-bg/<job-id>/out` — leia com Read quando o
-  status chegar, só se precisar dos detalhes.
+- Launch: `bgrun "<short description>" "<full command>"` (or `bgrun "<command>"`).
+  Returns immediately with a job-id; the chat stays free.
+- Do NOT poll synchronously or sleep waiting. When the job finishes, the
+  UserPromptSubmit hook injects a `<background-task-status>` block automatically in
+  the next turn — trust that, do not keep checking.
+- On demand: `bg-status [job-id]` (status) · `bg-kill <job-id>` (kill).
+- Each job's output lives in `~/.piebald-bg/<job-id>/out` — read it with Read when
+  the status arrives, only if you need the details.
 
-Bom senso: tarefa rápida (~<20s) roda síncrona normal; tarefa longa vai pro `bgrun`.
-É reflexo — não pergunte antes."""
+Use your judgment: fast tasks (~<20s) run normally inline; long tasks go to `bgrun`.
+This is a reflex — do not ask first."""
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", default=DEFAULT_DB)
-    ap.add_argument("--revert", action="store_true", help="remove a diretiva")
+    ap.add_argument("--revert", action="store_true", help="remove the directive")
     args = ap.parse_args()
 
     db = args.db
     if not os.path.exists(db):
-        sys.exit(f"app.db não encontrado: {db}")
+        sys.exit(f"app.db not found: {db}")
 
     # backup app.db + wal + shm
     ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -56,13 +56,13 @@ def main():
         src = db + suf
         if os.path.exists(src):
             shutil.copy2(src, f"{src}.bak-{ts}")
-    print(f"[backup] {db}.bak-{ts} (+ wal/shm se existiam)")
+    print(f"[backup] {db}.bak-{ts} (+ wal/shm if present)")
 
     con = sqlite3.connect(db, timeout=15)
     con.execute("PRAGMA busy_timeout=15000")
     cur = con.cursor()
 
-    # config_id do profile Default (dinâmico)
+    # config_id of the Default profile (dynamic)
     cur.execute("SELECT id,name,config_id FROM profiles WHERE name='Default' AND is_system=1")
     row = cur.fetchone()
     if not row:
@@ -74,21 +74,21 @@ def main():
     cur.execute("SELECT system_prompt FROM base_gen_cfg_data WHERE gen_cfg_id=?", (cfg_id,))
     r = cur.fetchone()
     if not r:
-        sys.exit(f"sem base_gen_cfg_data pra gen_cfg_id={cfg_id}")
+        sys.exit(f"no base_gen_cfg_data for gen_cfg_id={cfg_id}")
     sp = r[0] or ""
-    print(f"[antes] system_prompt: {len(sp)} chars; marcador presente? {BG_MARKER in sp}")
+    print(f"[before] system_prompt: {len(sp)} chars; marker present? {BG_MARKER in sp}")
 
     if args.revert:
         if BG_MARKER not in sp:
-            print("[revert] marcador ausente — nada a fazer."); con.close(); return
+            print("[revert] marker not found — nothing to do."); con.close(); return
         new = sp.split("\n\n---\n\n" + BG_MARKER)[0]
         cur.execute("UPDATE base_gen_cfg_data SET system_prompt=? WHERE gen_cfg_id=?", (new, cfg_id))
         con.commit()
-        print(f"[revert] removido -> {len(new)} chars")
+        print(f"[revert] removed -> {len(new)} chars")
         con.close(); return
 
     if BG_MARKER in sp:
-        print("[idempotente] diretiva já presente — no-op."); con.close(); return
+        print("[idempotent] directive already present — no-op."); con.close(); return
 
     new = sp + DIRECTIVE
     cur.execute("UPDATE base_gen_cfg_data SET system_prompt=? WHERE gen_cfg_id=?", (new, cfg_id))
@@ -98,13 +98,13 @@ def main():
     except Exception:
         pass
 
-    # verificação read-back
+    # read-back verification
     cur.execute("SELECT length(system_prompt), instr(system_prompt,?) FROM base_gen_cfg_data WHERE gen_cfg_id=?", (BG_MARKER, cfg_id))
     ln, pos = cur.fetchone()
     con.close()
-    print(f"[depois] system_prompt: {ln} chars; marcador na posição {pos}")
-    print("[ok] diretiva aplicada." if pos else "[FALHA] marcador não encontrado após write")
-    print(">>> reinicie o Piebald pra ativar (o profile é lido na criação do chat).")
+    print(f"[after] system_prompt: {ln} chars; marker at position {pos}")
+    print("[ok] directive applied." if pos else "[FAIL] marker not found after write")
+    print(">>> restart Piebald to activate (the profile is read when a new chat is created).")
 
 
 if __name__ == "__main__":
