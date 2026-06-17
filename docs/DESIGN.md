@@ -71,8 +71,8 @@ memories/cluster-notes). It is our `commandQueue`, but **pull-on-next-turn** ins
 | trigger (tool prompt) | **A** directive in system prompt | `apply-bg-directive.py` appends to `base_gen_cfg_data.system_prompt` of the Default profile |
 | `spawnBackgroundTask` + detach | **B** `bgrun` | PowerShell `Start-Process` (Win) / `setsid` (Linux) — independent process that survives the tool call |
 | `spillToDisk` (output to disk) | **B** `bgrun` | runner redirects `> out 2>&1`; state in `~/.piebald-bg/<job>/` |
-| `enqueueShellNotification` + `commandQueue` | **C** `bg-wake.sh` | scans `*/done`, injects `<background-task-status>` into hook stdout |
-| `notified` flag | **C** `.ack` per job | `touch .ack` before emitting → idempotent |
+| `enqueueShellNotification` + `commandQueue` | **D** `bg-push.mjs` (push) + **C** `bg-wake.sh` (fallback) | D resolves the origin chat from `app.db` and pushes the recap via the BFF `POST /chats/:id/send` → the ORIGIN chat auto-continues. C is the safety net: retries the push, else pull-announces. |
+| `notified` flag | **D/C** `.pushed` (push delivered) + `.ack` (pull announced) per job | written before/after delivery → idempotent |
 | size-watchdog (768GB) | (n/a) | short jobs; common sense. Can be added later |
 
 ### 3.1 Why `bgrun` and not `bg`
@@ -93,19 +93,58 @@ bash` is misleading — it inherits the parent shell's PATH.)
 
 ---
 
-## 4. Hard limitation (architectural ceiling)
+## 4. Push — auto-progression in the ORIGIN chat (the §4 ceiling, refuted)
 
-Without a unilateral injection event loop, **true push mid-generation is not possible**.
-The best achievable is **wake on the next `UserPromptSubmit`** (next time the user
-types). The normal flow (fire → converse → status appears) hides this; but firing and
-going silent for 10 min means the agent only sees completion when the user types again.
-Anyone promising "real push" in Piebald is mistaken.
+Earlier this doc claimed true push was impossible in Piebald and that the best
+achievable was pull-on-next-`UserPromptSubmit`. **That was wrong** — refuted by
+reverse-engineering the `piebald-mobile-mod` BFF (the bridge to Piebald's internal
+WebSocket). Push IS possible, and the trio now does it.
+
+### 4.1 The mechanism
+The BFF (`piebald-mobile-mod`, HTTP on `127.0.0.1:8788`) wraps Piebald's WS
+`send_message_streaming` as `POST /chats/:id/send` `{text, queue_type}`. Posting a
+message into a chat id **triggers a real generation** in that chat — the agent there
+"wakes" and continues, exactly like Claude Code's `commandQueue` injection, but
+delivered to the **specific origin chat** (no cross-session leak).
+
+- `queue_type:"next_iteration"` → engine `queue_type:"yield"`. Proven on win-work
+  2026-06-17: into an **idle** chat it fires a fresh turn; into a **working** chat it
+  queues for the next iteration without interrupting or branching. (The other surface
+  modes: `after_loop`→`followup`; `interrupt`→omit/immediate. We always use
+  `next_iteration` — deliver cleanly without cutting a running loop.)
+- The `/send` HTTP response **hangs** on the stream; the send still fires. So the push
+  is **fire-and-forget** with a short abort (~1.5s; localhost delivery is <100ms).
+
+### 4.2 The identity problem (and the solution)
+Piebald gives the terminal **no chat id** (env has only `TERM_PROGRAM=piebald`) and the
+hook payload carries none. But `app.db.message_part_tool_call.tool_input` stores every
+terminal tool call's command text, joinable to `chats` via `message_parts → messages`.
+So at **done-time** (the bgrun launch row is committed by then), we resolve the origin:
+the `RunTerminalCommand` whose `tool_input` contains the job's command **verbatim**,
+nearest in time to the job's `start` epoch → origin `chat_id`. A literal command match
+is required (no time-only fallback — that risks mis-binding to the wrong chat); if
+nothing matches, we return nothing and let the pull hook announce. Proven 2026-06-17
+(resolved to chat 653; an unresolvable synthetic job correctly returned no binding).
+
+### 4.3 What still can't be done
+The push is **pull-triggered from the runner's own completion**, not a Piebald event
+loop — but the effect is the Claude-Code loop: fire → go silent → on completion the
+ORIGIN chat auto-continues, with **no user input required** and **no leak**. The only
+hard dependency is the BFF being up (the `remote-control` skill manages it). BFF down →
+graceful fall back to the old pull-on-next-turn announce.
 
 ---
 
 ## 5. Where everything lives (host win-work)
 
 - **Installed scripts:** `~/bin/` (on the git-bash PATH). Canonical source: this repo's `bin/`.
+- **Push (piece D):** `~/bin/bg-push.mjs` (Node 24 one-shot, `node:sqlite` for the
+  origin-chat resolve, `fetch` for the BFF POST). Invoked by bgrun's detached runner on
+  completion, and retried by `bg-wake.sh`. Depends on the `piebald-mobile-mod` BFF
+  (`127.0.0.1:8788`, default port on this host; code default 8787 — bg-push tries both).
+  Bring the BFF up with the `remote-control` skill. node:sqlite is used (not the scoop
+  `sqlite3` shim, which junctions/deadlocks here — same robust path as
+  `piebald-dynamic-subagents/hooks/pretooluse-route.mjs`).
 - **Registered hook:** `~/.claude/settings.json` → `UserPromptSubmit` (3rd hook,
   alongside `piebald-memory-selector.cmd` and `fullstep-wake-hook.cmd`).
 - **Directive (piece A):** `app.db` at `%APPDATA%\piebald\app.db`, table
