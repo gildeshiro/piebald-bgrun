@@ -9,11 +9,15 @@ When working IN THIS repo:
 - The 7 canonical artifacts live in `bin/`. The ones that actually run are **installed**
   in `~/bin/` (on the PATH) — `bin/` here is the **source**. Edited here? Run
   `bash install.sh` to reinstall, OR edit and copy the specific file to `~/bin/`.
-- Piece **D** = `bin/bg-push.mjs` (PUSH / auto-progression): on a job's completion the
-  detached runner resolves the ORIGIN chat (from `app.db`) and pushes the recap into it
-  via the `piebald-mobile-mod` BFF (`127.0.0.1:8788`) → that chat auto-continues, no
-  cross-session leak. Needs the BFF up (`remote-control` skill); BFF down → `bg-wake.sh`
-  pull fallback. Uses `node:sqlite` (NOT the scoop `sqlite3` shim — it deadlocks here).
+- Piece **D** = `bin/bg-push.mjs` (PUSH to the origin chat) was built + tested, then
+  **ROLLED BACK 2026-06-17** and is **NOT installed/wired**. Reason: a BFF-issued WS
+  send renders live on **no** surface (not even the origin chat's own UI — the BFF is a
+  separate connection, so the React cache gate drops it everywhere → refresh-only). The
+  trio is back to the **original pull hook** (`bg-wake.sh` stdout-announce in the
+  current chat; the cross-session leak is accepted as the lesser evil since the pull
+  hook is the only path that renders live). `bin/bg-push.mjs` stays in-repo as a
+  documented experiment; see `docs/LIMITATION-cross-client-live-render.md`. So the
+  **active** trio is A (directive) + B (`bgrun`) + C (`bg-wake.sh` pull).
 - **DO NOT rename `bgrun` to `bg`**: `bg` is a bash job-control builtin with PATH
   precedence — the script would never be reached.
 - Piece A (directive in the system prompt) is written to Piebald's `app.db` via

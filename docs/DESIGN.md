@@ -95,6 +95,13 @@ bash` is misleading — it inherits the parent shell's PATH.)
 
 ## 4. Push — auto-progression in the ORIGIN chat (the §4 ceiling, refuted)
 
+> **⚠️ ROLLED BACK 2026-06-17.** The push below works *mechanically* but was disabled:
+> a BFF-issued WS send renders live on **no** surface — not even the origin chat's own
+> UI (the BFF is a separate connection → the client cache gate drops it everywhere →
+> refresh-only). Only the pull hook (§3 C) renders live. The active trio is pull-only;
+> the leak is accepted. See `docs/LIMITATION-cross-client-live-render.md`. The rest of
+> this section is kept as the (valid) reverse-engineering of the push mechanism.
+
 Earlier this doc claimed true push was impossible in Piebald and that the best
 achievable was pull-on-next-`UserPromptSubmit`. **That was wrong** — refuted by
 reverse-engineering the `piebald-mobile-mod` BFF (the bridge to Piebald's internal

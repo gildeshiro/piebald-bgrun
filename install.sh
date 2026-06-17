@@ -29,11 +29,15 @@ echo "== piebald-bgrun install (win=$IS_WIN) =="
 
 # ── B: wrappers ───────────────────────────────────────────────────────────────
 mkdir -p "$BINDST"
-for f in bgrun bg-status bg-kill bg-wake.sh bg-push.mjs apply-bg-directive.py; do
+# NOTE: bg-push.mjs (piece D, the WS push to the origin chat) is intentionally NOT
+# installed — it was built, tested, and ROLLED BACK 2026-06-17 (the push renders live
+# on no surface; see docs/LIMITATION-cross-client-live-render.md). The trio is back to
+# the original pull hook. bin/bg-push.mjs is kept in-repo as a documented experiment.
+for f in bgrun bg-status bg-kill bg-wake.sh apply-bg-directive.py; do
   cp "$BINSRC/$f" "$BINDST/$f"; chmod +x "$BINDST/$f"
 done
 [[ $IS_WIN -eq 1 ]] && cp "$BINSRC/bg-wake-hook.cmd" "$BINDST/bg-wake-hook.cmd"
-echo "[B] wrappers -> $BINDST (bgrun, bg-status, bg-kill, bg-push.mjs)"
+echo "[B] wrappers -> $BINDST (bgrun, bg-status, bg-kill)"
 case ":$PATH:" in *":$BINDST:"*) : ;; *) echo "    WARNING: $BINDST is not in PATH — please add it.";; esac
 
 # ── C: hook UserPromptSubmit (idempotent) ────────────────────────────────────

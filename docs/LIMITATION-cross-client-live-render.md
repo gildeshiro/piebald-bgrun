@@ -37,17 +37,26 @@ Flutter mod all exhibit it. Sending from one, the others don't update on their o
 
 ## How it bounds bgrun
 
-- The auto-progression **push works**: `bg-push.mjs` resolves the origin chat and the
-  BFF `send_message_streaming` makes that chat continue — it lands in the **right**
-  chat (no cross-session leak) and the agent continues the loop.
-- **But you only SEE it live on the UI/connection that is the origin of the loop.** On
-  any other UI viewing that chat, the continuation does not render until refresh. So
-  "push to the origin chat" is correct and useful, but it does **not** give live visual
-  feedback on a non-origin surface.
-- **Decision (2026-06-17, user):** revert the runner's done-time self-push; deliver the
-  completion to the origin chat via the **hook on the next `UserPromptSubmit`**
-  (`bg-wake.sh` → `bg-push.mjs`) instead of an immediate auto-progression at completion.
-  `bg-push.mjs` is kept; the delivery is at hook/pull timing.
+- The auto-progression **push works mechanically**: `bg-push.mjs` resolves the origin
+  chat and the BFF `send_message_streaming` makes that chat continue — it lands in the
+  **right** chat (no cross-session leak) and the agent continues the loop.
+- **But the push renders live on NO surface — not even the origin chat's own UI.**
+  Corrected by the user 2026-06-17: the send is issued by the **BFF (a separate WS
+  connection)**, so relative to that send *every* UI — including the one viewing the
+  origin chat — is "another client" and hits the cache gate above → the continuation
+  only shows on **refresh**, everywhere. There is no asterisk; it is a flat ❌ live.
+- **Only the old pull hook renders live**, because its `<background-task-status>` rides
+  the user's OWN next turn in the user's OWN UI (a context-notification on a turn that
+  UI itself initiates) — never a separate WS-injected generation.
+- **The trilemma (you can pick 2 of 3):** origin-targeted (no leak) · no autonomous
+  send · live render. Targeting a specific chat ≡ `send_message_streaming` (fires + no
+  live). No-fire + live ≡ the pull hook (current chat only → leak). No-fire + no-leak ≡
+  a raw `app.db` insert (refresh-only, fragile — rejected).
+- **Final decision (2026-06-17, user): full rollback to the original pull hook.** The
+  push (piece D) is **disabled** — the leak (announce in the current chat) is accepted
+  because the pull hook is the only path that renders live. Live state: `bgrun` runner
+  reverted, `bg-wake.sh` = original stdout-announce (zero network), `bg-push.mjs`
+  unwired/disabled (kept in-repo as a documented experiment).
 
 ## What can / can't be done about the limitation itself
 
