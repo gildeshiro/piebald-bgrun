@@ -58,13 +58,6 @@ rc=\$?
 date +%s > "$JOBDIR/end"
 printf '%s' "\$rc" > "$JOBDIR/done"
 touch "$BG_ROOT/.pending"
-# auto-progression (push half): resolve the ORIGIN chat and push the completion
-# recap into it via the BFF, so the agent continues the loop in the RIGHT chat
-# (no cross-session leak). Best-effort & detached-safe: any failure is swallowed and
-# the job falls through to the bg-wake.sh pull fallback (which skips .pushed jobs).
-# node is resolved at RUN time (the detached runner's PATH may lack it).
-NODE_BIN="\$(command -v node 2>/dev/null || command -v node.exe 2>/dev/null || echo 'C:/PROGRA~1/nodejs/node.exe')"
-"\$NODE_BIN" "$HOME/bin/bg-push.mjs" "$JOBDIR" >/dev/null 2>&1 || true
 RUNNER
 chmod +x "$JOBDIR/runner.sh"
 

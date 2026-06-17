@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
-# bg-wake.sh — UserPromptSubmit wake hook for the `bgrun` wrapper (FALLBACK + retry).
+# bg-wake.sh — UserPromptSubmit wake hook for the `bgrun` wrapper (PRIMARY delivery).
 #
-# Primary delivery is now PUSH (bg-push.mjs, fired by bgrun's runner on completion):
-# it resolves the ORIGIN chat and pushes the completion recap straight into it, so the
-# agent auto-progresses in the RIGHT chat with no cross-session leak. This hook is the
-# safety net:
-#   1. a job already delivered by push (`.pushed`) -> ack, never re-announce;
-#   2. otherwise RETRY the push here (resolve origin + deliver to the right chat) —
-#      covers jobs whose done-time push failed (BFF was down) or predate the wiring;
-#   3. only if the push still can't deliver (BFF down / origin unresolvable) fall back
-#      to a pull-announce in the CURRENT chat (the old global behavior, last resort).
-# The retry (2) is what kills the leak for non-pushed jobs: it sends to the job's
-# origin, not the current chat.
+# bgrun's runner does NOT push at completion (reverted 2026-06-17 by user decision —
+# the runner is back to old/simple: fire detached + write `done` + `.pending`). This
+# hook is what DELIVERS the completion, on the next UserPromptSubmit, to the ORIGIN
+# chat that fired the job (resolve via bg-push.mjs → BFF append) — so it lands in the
+# RIGHT chat, not whatever chat is currently active (no cross-session leak). Order:
+#   1. a job already delivered (`.pushed`) -> ack, never re-announce;
+#   2. else resolve the origin + append there via bg-push.mjs (deliver to the RIGHT
+#      chat — this is the primary path, at hook/pull timing, not at done-time);
+#   3. only if that can't deliver (BFF down / origin unresolvable) fall back to a
+#      pull-announce in the CURRENT chat (the old global behavior, last resort).
 #
 # CONTRACT:
 #   NON-FATAL  — always exits 0; never blocks a prompt
@@ -35,7 +34,7 @@ for d in "$BG_ROOT"/*/; do
     [[ -f "$d/.ack" ]] && continue
     # (1) already delivered to the origin chat via push -> never announce here.
     if [[ -f "$d/.pushed" ]]; then touch "$d/.ack" 2>/dev/null || true; continue; fi
-    # (2) retry the push: resolve origin + deliver to the RIGHT chat (not this one).
+    # (2) PRIMARY delivery: resolve the origin chat + append there (not this chat).
     if [[ -x "$NODE_BIN" || -f "$BG_PUSH" ]]; then
       "$NODE_BIN" "$BG_PUSH" "$d" >/dev/null 2>&1 || true
     fi
