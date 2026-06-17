@@ -31,8 +31,9 @@ const DB_PATH = process.env.PIEBALD_APP_DB ||
   path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "Piebald", "app.db");
 // BFF default on this host is 8788 (running instance); code default is 8787. Try both.
 const BFF_PORTS = (process.env.BG_BFF_PORT ? [process.env.BG_BFF_PORT] : ["8788", "8787"]);
-const WINDOW_BEFORE_S = 60;   // tool call is created up to ~Ns before the job start
+const WINDOW_BEFORE_S = 90;   // tool call is created up to ~Ns before the job start
 const WINDOW_AFTER_S = 30;    // ...or shortly after (clock skew / commit lag)
+const UNIQUE_WINDOW_S = 15;   // tight window for the "single bgrun launch" safe fallback
 const CANDIDATE_LIMIT = 300;  // most-recent RunTerminalCommand rows to scan
 
 function readFileSafe(p) { try { return readFileSync(p, "utf8"); } catch { return ""; } }
@@ -109,27 +110,34 @@ async function resolveChatId({ cmd, desc, startEpoch }) {
     ).all();
 
     const startMs = Number.isInteger(startEpoch) ? startEpoch * 1000 : NaN;
-    // REQUIRE a literal cmd-text match: the bgrun launch tool_input contains the job's
-    // command verbatim (true for normal usage — the model types a literal command).
-    // Among matches, pick the one nearest in time to the job's start (disambiguates the
-    // same command fired in two parallel chats). NO time-only fallback: if nothing
-    // matches the command we return NaN and let the pull hook announce — far safer than
-    // mis-binding a job to a merely-temporally-near bgrun in the WRONG chat.
-    let best = null, bestDelta = Infinity;
+    // Resolve the origin in two tiers, both safe against mis-binding:
+    //  (1) TEXT match — the bgrun launch tool_input contains the job's DESC or CMD
+    //      verbatim. desc is a static label (survives shell expansion); cmd covers the
+    //      single-arg case. This is the normal, deterministic path. Nearest-in-time
+    //      breaks ties when the same label/command ran in two parallel chats.
+    //  (2) UNIQUE-LAUNCH fallback — for a fully dynamic invocation (both desc & cmd
+    //      contain $(...) / vars so neither appears verbatim): if there is exactly ONE
+    //      chat that fired a bgrun launch within a TIGHT window around the job start,
+    //      trust it. If 0 or >1, return NaN (let the pull hook announce) — never guess.
+    const descKey = (desc && desc.length >= 4) ? desc : null;
+    const cands = [];
     for (const r of rows) {
       const ti = String(r.tool_input || "");
-      if (!cmd || !ti.includes(cmd)) continue;          // literal command match required
       const t = Date.parse(String(r.created_at || ""));
-      let delta = Infinity, inWindow = true;
-      if (!Number.isNaN(startMs) && !Number.isNaN(t)) {
-        const d = (t - startMs) / 1000;
-        inWindow = d >= -WINDOW_BEFORE_S && d <= WINDOW_AFTER_S;
-        delta = Math.abs(d);
-      }
+      let delta = NaN;
+      if (!Number.isNaN(startMs) && !Number.isNaN(t)) delta = (t - startMs) / 1000;
+      const inWindow = Number.isNaN(delta) ? true : (delta >= -WINDOW_BEFORE_S && delta <= WINDOW_AFTER_S);
       if (!inWindow) continue;
-      if (delta < bestDelta) { bestDelta = delta; best = r.chat_id; }
+      const textMatch = (descKey && ti.includes(descKey)) || (cmd && ti.includes(cmd));
+      cands.push({ chat_id: r.chat_id, adelta: Number.isNaN(delta) ? Infinity : Math.abs(delta), textMatch });
     }
-    return Number.isInteger(best) ? best : NaN;
+    // (1) text match — nearest in time wins
+    const textCands = cands.filter((c) => c.textMatch).sort((a, b) => a.adelta - b.adelta);
+    if (textCands.length) return Number.isInteger(textCands[0].chat_id) ? textCands[0].chat_id : NaN;
+    // (2) unique bgrun launch in the tight window (dynamic-command case)
+    const tightChats = [...new Set(cands.filter((c) => c.adelta <= UNIQUE_WINDOW_S).map((c) => c.chat_id))];
+    if (tightChats.length === 1 && Number.isInteger(tightChats[0])) return tightChats[0];
+    return NaN;
   } catch {
     return NaN;
   } finally {
