@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# bg-clean — maintenance for the `bgrun` job store (~/.piebald-bg). Runs OFF the
+# synchronous chat path: DETACHED by bgrun at each launch, and manually on demand.
+# This is where all the O(N) work + forks live, so the wake hook can stay instant.
+#
+# It does three things, in one O(total-dirs) sweep:
+#   1. GC      — delete completed folders (have `done`) older than BG_TTL_DONE (6h).
+#                A grace window so the agent can still Read the `out` right after the
+#                wake notification; after it, the folder is purged ("limpa o cache").
+#   2. TTL kill— a job still running (pid alive) older than BG_TTL_RUN (24h) is treated
+#                as stuck: terminate its process group, then purge the folder.
+#   3. Reap    — a job with no `done` whose pid is DEAD is an orphan (runner crashed /
+#                machine rebooted / hard SIGKILL). If recent, write a synthetic `done`
+#                + enqueue it so it is announced once; if old, purge silently. Either
+#                way it stops being counted as "alive".
+#
+# A dir is only treated as a bgrun job if it contains a `cmd` file. Anything else
+# (e.g. a hand-made scratch dir) is left untouched.
+#
+#   bg-clean            # run the sweep, print a summary
+#   bg-clean --quiet    # same, no output (used by the detached launch path)
+#   BG_TTL_DONE=3600 BG_TTL_RUN=21600 bg-clean   # override the windows (seconds)
+set -uo pipefail
+
+BG_ROOT="${PIEBALD_BG_ROOT:-$HOME/.piebald-bg}"
+TTL_DONE="${BG_TTL_DONE:-21600}"   # 6h — purge completed folders older than this
+TTL_RUN="${BG_TTL_RUN:-86400}"     # 24h — kill+purge jobs still running past this
+QUIET=0
+for a in "$@"; do [[ "$a" == "--quiet" ]] && QUIET=1; done
+log() { [[ $QUIET -eq 1 ]] || echo "$@"; }
+
+[[ -d "$BG_ROOT" ]] || exit 0
+
+# single-instance lock (atomic mkdir); bail if another clean is already running
+LOCK="$BG_ROOT/.clean.lock"
+if ! mkdir "$LOCK" 2>/dev/null; then exit 0; fi
+trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT INT TERM
+
+now="$(date +%s)"
+
+# epoch_of <file> <dir>: prefer the recorded epoch in <file> (start/end), fall back to
+# the dir mtime. Echoes an epoch (or 0 if nothing usable).
+epoch_of() {
+  local f="$1" dir="$2" v=""
+  if [[ -f "$f" ]]; then read -r v < "$f" 2>/dev/null || true; fi
+  if [[ "$v" =~ ^[0-9]+$ ]]; then echo "$v"; return; fi
+  v="$(stat -c %Y "$dir" 2>/dev/null || echo 0)"; echo "${v:-0}"
+}
+
+# kill the recorded process group + native subtree of a job (same approach as bg-kill)
+kill_job() {
+  local dir="$1" pid winpid
+  pid="$(tr -d '\r\n ' < "$dir/pid" 2>/dev/null || true)"
+  winpid="$(tr -d '\r\n ' < "$dir/winpid" 2>/dev/null || true)"
+  if command -v powershell.exe >/dev/null 2>&1; then
+    [[ -n "$winpid" ]] && powershell.exe -NoProfile -Command "taskkill /T /F /PID $winpid" >/dev/null 2>&1 || true
+    if [[ -n "$pid" ]]; then kill -TERM -"$pid" 2>/dev/null || true; sleep 0.2 2>/dev/null || true; kill -KILL -"$pid" 2>/dev/null || true; fi
+  else
+    if [[ -n "$pid" ]]; then kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true; sleep 0.2 2>/dev/null || true; kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true; fi
+  fi
+}
+
+shopt -s nullglob
+gc=0; killed=0; reaped=0; live=0; skipped=0
+for d in "$BG_ROOT"/*/; do
+  job="${d%/}"; job="${job##*/}"
+  [[ -f "$d/cmd" ]] || { skipped=$((skipped+1)); continue; }   # not a bgrun job
+
+  if [[ -f "$d/done" ]]; then
+    # completed — GC after the grace window
+    age=$(( now - $(epoch_of "$d/end" "$d") ))
+    if (( age > TTL_DONE )); then rm -rf "$d" && gc=$((gc+1)); fi
+    continue
+  fi
+
+  # no `done` -> running or orphan
+  pid="$(tr -d '\r\n ' < "$d/pid" 2>/dev/null || true)"
+  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    # genuinely alive
+    age=$(( now - $(epoch_of "$d/start" "$d") ))
+    if (( age > TTL_RUN )); then
+      log "[bg-clean] killing stuck job $job (running ${age}s > ${TTL_RUN}s)"
+      kill_job "$d"; printf '%s' "137" > "$d/done"; rm -rf "$d" && killed=$((killed+1))
+    else
+      live=$((live+1))
+    fi
+  else
+    # pid dead (or never recorded) -> orphan
+    age=$(( now - $(epoch_of "$d/start" "$d") ))
+    if (( age <= TTL_DONE )); then
+      # recent orphan: surface it once, then it follows the normal completed->GC path
+      printf '%s' "137" > "$d/done"
+      printf '%s\n' "$job" >> "$BG_ROOT/.queue"
+      : > "$BG_ROOT/.pending"
+      reaped=$((reaped+1))
+      log "[bg-clean] reaped recent orphan $job (announced as failed)"
+    else
+      rm -rf "$d" && reaped=$((reaped+1))
+    fi
+  fi
+done
+
+# if the queue ended up empty and nothing is alive, make sure the gate is down
+[[ -s "$BG_ROOT/.queue" ]] || rm -f "$BG_ROOT/.pending" 2>/dev/null || true
+
+log "[bg-clean] gc=$gc killed=$killed reaped=$reaped live=$live skipped=$skipped (ttl_done=${TTL_DONE}s ttl_run=${TTL_RUN}s)"
+exit 0

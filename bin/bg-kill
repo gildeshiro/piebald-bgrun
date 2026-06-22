@@ -52,6 +52,8 @@ else
 fi
 
 [[ -f "$JOBDIR/done" ]] || printf '%s' "143" > "$JOBDIR/done"
+# enqueue for the wake hook (so the kill is announced once) + raise the gate
+printf '%s\n' "$job" >> "$BG_ROOT/.queue"
 touch "$BG_ROOT/.pending"
 echo "[bg-kill] $job terminated (rc=143)."
 exit 0

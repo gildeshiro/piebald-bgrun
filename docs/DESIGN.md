@@ -80,13 +80,30 @@ memories/cluster-notes). It is our `commandQueue`, but **pull-on-next-turn** ins
 over PATH** even in non-interactive shells. An executable `~/bin/bg` would never be
 reached — the builtin intercepts ("bg: no job control"). Hence `bgrun`.
 
-### 3.2 Cheap hook gate
+### 3.2 Cheap hook gate + queue model (revised 2026-06-22)
 `bg-wake-hook.cmd` (Windows) only spawns git-bash if the sentinel
-`~/.piebald-bg/.pending` exists. No pending job → exit ~5ms, zero spawn. `bg-wake.sh`
-removes `.pending` when no jobs are still alive (no `done`). Mirrors the gate used in
-the `fullstep-wake-hook.cmd` already proven on this host.
+`~/.piebald-bg/.pending` exists. No pending job → exit ~5ms, zero spawn.
 
-### 3.3 Bash invocation in Piebald/Windows hooks
+The wake hook is **queue-driven**, not sweep-driven (this is the core of the
+2026-06-22 fix — see progress-log). The detached runner, on completion, appends the
+job id to `~/.piebald-bg/.queue` (the FIFO that IS Piebald's `commandQueue`) and
+raises `.pending`. `bg-wake.sh` reads **only** that queue (snapshot via rename, drain,
+clear `.pending`) — it **never scans `~/.piebald-bg/*/`**. So its runtime is
+**O(jobs-completed-since-last-turn)**, independent of how many job folders have
+accumulated. The old design swept every dir; even fork-free that costs ~3ms/dir of
+`stat()` under Windows Defender (200 dirs ≈ 600ms; the real bug was orphan folders
+that never cleared `.pending`, so the sweep ran on **every** prompt → 42–56s freeze,
+measured 2026-06-22). Folder GC / orphan reaping / TTL kills live in `bg-clean`, run
+**detached** by bgrun at launch (off the chat path) and manually — never in the hook.
+
+### 3.3 No-orphan guarantee
+`bgrun`'s runner installs a `trap` that writes the `done` sentinel (+rc) and enqueues
+on EXIT/INT/TERM, so a crashed or group-killed runner can never become an orphan that
+holds `.pending` forever. `bg-kill` writes a synthetic `done` (rc=143) and enqueues.
+Hard SIGKILL (taskkill /F) bypasses the trap; that residue is reaped by `bg-clean`'s
+pid-liveness sweep (`kill -0` on the recorded group-leader pid).
+
+### 3.4 Bash invocation in Piebald/Windows hooks
 The `cmd /C` that Piebald uses to run hooks has a **minimal PATH, without git-bash**.
 So the `.cmd` calls bash via the 8.3 path: `C:\PROGRA~1\Git\bin\bash.exe`. (`Get-Command
 bash` is misleading — it inherits the parent shell's PATH.)

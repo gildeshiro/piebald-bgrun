@@ -43,26 +43,50 @@ printf '%s' "$DESC" > "$JOBDIR/desc"
 printf '%s' "$CWD"  > "$JOBDIR/cwd"
 
 # detached runner: runs in the original CWD, captures everything in out, writes the
-# done sentinel last. Re-exports PATH because the detached process may not inherit it.
+# done sentinel last, then ENQUEUES the job id for the wake hook. A trap guarantees a
+# sentinel is written even on crash/kill/signal, so the job can NEVER become an orphan
+# that the gate counts as "still alive" forever (the bug that froze every prompt).
+# (Hard SIGKILL still bypasses the trap — that residue is reaped by bg-clean's
+# pid-liveness sweep.)
 cat > "$JOBDIR/runner.sh" <<RUNNER
 #!/usr/bin/env bash
 export PATH="\$HOME/bin:\$HOME/AppData/Roaming/npm:\$HOME/scoop/shims:/usr/bin:/bin:/usr/local/bin:\$PATH"
+JOBDIR="$JOBDIR"; BG_ROOT="$BG_ROOT"; JOB="$JOB"
+# Finalizer: write the done sentinel + enqueue + raise the gate, exactly once.
+finish() {
+  local rc="\${1:-143}"
+  [[ -f "\$JOBDIR/done" ]] && return 0
+  date +%s > "\$JOBDIR/end"
+  printf '%s' "\$rc" > "\$JOBDIR/done"
+  printf '%s\n' "\$JOB" >> "\$BG_ROOT/.queue"
+  : > "\$BG_ROOT/.pending"
+}
+# On any unexpected exit (crash/kill/TERM) without a recorded rc -> rc 143.
+trap 'finish 143' EXIT INT TERM
 # Record our OWN pid as the job's process-group leader. When launched detached
 # (Windows Start-Process / setsid) this bash is a session/group leader, so \$\$ == pgid
 # and bg-kill can reap the whole group (this runner + inner bash + the command).
-printf '%s' "\$\$" > "$JOBDIR/pid"
+printf '%s' "\$\$" > "\$JOBDIR/pid"
 cd "$CWD" 2>/dev/null || cd "\$HOME"
-date +%s > "$JOBDIR/start"
-bash -lc "\$(cat '$JOBDIR/cmd')" > "$JOBDIR/out" 2>&1
+date +%s > "\$JOBDIR/start"
+# Best-effort housekeeping at launch, DETACHED (off the chat path): GC old folders,
+# kill stuck jobs, reap dead-pid orphans. Never blocks this runner.
+if [[ -x "\$HOME/bin/bg-clean" ]]; then
+  if command -v setsid >/dev/null 2>&1; then setsid "\$HOME/bin/bg-clean" --quiet >/dev/null 2>&1 &
+  else nohup "\$HOME/bin/bg-clean" --quiet >/dev/null 2>&1 & fi
+  disown 2>/dev/null || true
+fi
+bash -lc "\$(cat '$JOBDIR/cmd')" > "\$JOBDIR/out" 2>&1
 rc=\$?
-date +%s > "$JOBDIR/end"
-printf '%s' "\$rc" > "$JOBDIR/done"
-touch "$BG_ROOT/.pending"
+trap - EXIT INT TERM
+finish "\$rc"
 RUNNER
 chmod +x "$JOBDIR/runner.sh"
 
-# cheap gate marker for the .cmd hook (only spawns bash if .pending exists)
-touch "$BG_ROOT/.pending"
+# NOTE: .pending is raised at COMPLETION (by the runner's finish()), not at launch.
+# While a job is still running there is nothing to announce, so the gate stays closed
+# and the wake hook costs ~5ms per prompt during long jobs (the .cmd gate exits before
+# even spawning bash). The hook fires only once a job actually finishes.
 
 # real detach: Windows -> PowerShell Start-Process (independent process that
 # survives the tool call return); elsewhere -> setsid/nohup.
