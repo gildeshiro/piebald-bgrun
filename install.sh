@@ -37,8 +37,24 @@ for f in bgrun bg-status bg-kill bg-clean bg-wake.sh apply-bg-directive.py; do
   cp "$BINSRC/$f" "$BINDST/$f"; chmod +x "$BINDST/$f"
 done
 [[ $IS_WIN -eq 1 ]] && cp "$BINSRC/bg-wake-hook.cmd" "$BINDST/bg-wake-hook.cmd"
+[[ $IS_WIN -eq 1 ]] && cp "$BINSRC/bg-clean-task.cmd" "$BINDST/bg-clean-task.cmd"
 echo "[B] wrappers -> $BINDST (bgrun, bg-status, bg-kill, bg-clean)"
 case ":$PATH:" in *":$BINDST:"*) : ;; *) echo "    WARNING: $BINDST is not in PATH — please add it.";; esac
+
+# ── B': scheduled maintenance (Windows) — runs bg-clean every 6h so the TTL fires
+#       even when bgrun isn't used. Idempotent: only created if missing.
+if [[ $IS_WIN -eq 1 ]]; then
+  if ! schtasks //query //tn "piebald-bg-clean" >/dev/null 2>&1; then
+    TASKCMD="$(cygpath -w "$BINDST/bg-clean-task.cmd" 2>/dev/null || echo "$BINDST/bg-clean-task.cmd")"
+    if schtasks //create //tn "piebald-bg-clean" //tr "$TASKCMD" //sc HOURLY //mo 6 //st 03:00 //f >/dev/null 2>&1; then
+      echo "[B'] scheduled task 'piebald-bg-clean' created (every 6h)"
+    else
+      echo "[B'] could not create scheduled task (run schtasks manually if you want it)"
+    fi
+  else
+    echo "[B'] scheduled task 'piebald-bg-clean' already present (idempotent)"
+  fi
+fi
 
 # ── C: hook UserPromptSubmit (idempotent) ────────────────────────────────────
 if [[ $DO_HOOK -eq 1 ]]; then

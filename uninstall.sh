@@ -41,9 +41,18 @@ else:
 PY
 fi
 
+# ── B': remove the scheduled maintenance task (Windows) ───────────────────────
+if [[ $IS_WIN -eq 1 ]]; then
+  if schtasks //query //tn "piebald-bg-clean" >/dev/null 2>&1; then
+    schtasks //delete //tn "piebald-bg-clean" //f >/dev/null 2>&1 \
+      && echo "[B'] scheduled task 'piebald-bg-clean' removed" \
+      || echo "[B'] could not remove scheduled task (delete it manually)"
+  fi
+fi
+
 # ── B: remove wrappers ────────────────────────────────────────────────────────
 if [[ $KEEP_BIN -eq 0 ]]; then
-  for f in bgrun bg-status bg-kill bg-wake.sh bg-wake-hook.cmd apply-bg-directive.py; do
+  for f in bgrun bg-status bg-kill bg-clean bg-wake.sh bg-wake-hook.cmd bg-clean-task.cmd apply-bg-directive.py; do
     rm -f "$BINDST/$f"
   done
   echo "[B] wrappers removed from $BINDST"
